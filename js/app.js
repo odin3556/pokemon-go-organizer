@@ -1,7 +1,8 @@
 // 画面（ハッシュルーティング）。データ処理は store / rules / search に分離している。
 
 import { KINDS, DATA_KINDS, STATUSES, parse, validate, serializeDecisions } from './markdown.js';
-import { state, loadAll, adoptData, revertData, setDecision, importDecisions, clearDecisions, setRule, knownDex, today } from './store.js';
+import { state, loadAll, adoptData, revertData, setDecision, importDecisions, clearDecisions, setRule, knownDex, dexMax, obtainable, today } from './store.js';
+import { GENERATIONS, GO_STATUS } from './config.js';
 import { RULE_GROUPS, LEAGUES, STATUS_LABEL, THRESHOLDS, evaluate, grade, formLabel } from './rules.js';
 import { EXTRA_OPTIONS, buildQuery } from './search.js';
 
@@ -96,7 +97,10 @@ function monRow(p, right = '') {
   return `<a class="row" href="${hrefOf(p)}">
     <span class="num">${pad(p.no)}</span>
     <div class="grow"><div class="title">${esc(p.name)}${form ? ` <small class="muted">${esc(form)}</small>` : ''}</div><div class="types-text">${typeText(p.types)}</div></div>
-    ${right || statusChip(s)}${ICON.chev}</a>`;
+    ${right || (obtainable(p) ? statusChip(s) : goBadge())}${ICON.chev}</a>`;
+}
+function goBadge() {
+  return `<span class="status none">${GO_STATUS.unreleased}</span>`;
 }
 function matchesQuery(p, q) {
   if (!q) return true;
@@ -111,7 +115,7 @@ const views = {};
 views.home = () => {
   const counts = { KEEP: 0, HOLD: 0, EXCLUDE: 0 };
   const decided = { KEEP: 0, HOLD: 0, EXCLUDE: 0 };
-  for (const p of state.pokemon) {
+  for (const p of state.pokemon.filter(obtainable)) {
     const s = statusOf(p);
     counts[s.status]++;
     if (s.decided) decided[s.status]++;
@@ -155,7 +159,10 @@ function dataStatusList(withSource = false) {
       f.parsed.meta.sample === 'true' ? 'サンプル' : '',
       withSource ? { bundled: '同梱', uploaded: 'アップロード', missing: '未読込' }[f.source] : '',
     ].filter(Boolean).join('・');
-    return `<div class="row"><div class="grow"><div class="title">${KINDS[k].label}</div>${tags ? `<div class="desc muted">${tags}・${f.parsed.records.length}件</div>` : ''}</div>
+    const count = k === 'pokemon'
+      ? `${new Set(state.pokemon.map((p) => p.no)).size} / 全国図鑑 ${dexMax()}種`
+      : `${f.parsed.records.length}件`;
+    return `<div class="row"><div class="grow"><div class="title">${KINDS[k].label}</div><div class="desc muted">${tags ? `${tags}・` : ''}${count}</div></div>
       <span class="right ${stale ? 'stale' : ''}">${date ? esc(date) : 'なし'}${stale && date ? ' ⚠' : ''}</span></div>`;
   }).join('')}</div>
   ${DATA_KINDS.some((k) => daysSince(state.files[k].parsed.meta.updated_at) > STALE_DAYS) ? `<p class="muted">⚠ は${STALE_DAYS}日以上更新されていないデータです。</p>` : ''}`;
@@ -166,7 +173,7 @@ const listState = { f: 'ALL', q: '' };
 views.list = (params) => {
   if (params.f) listState.f = params.f;
   if (params.q != null) listState.q = params.q;
-  const filters = [['ALL', 'すべて'], ['KEEP', '残す'], ['HOLD', '保留'], ['EXCLUDE', '整理']];
+  const filters = [['ALL', 'すべて'], ['KEEP', '残す'], ['HOLD', '保留'], ['EXCLUDE', '整理'], ['UNRELEASED', GO_STATUS.unreleased]];
   return `
   <div class="page-head"><h1>ポケモン一覧<span class="sub" id="list-count"></span></h1></div>
   <div class="searchbox">${ICON.search}<input id="list-q" type="search" placeholder="ポケモン名・図鑑番号で検索" value="${esc(listState.q)}" autocomplete="off"></div>
@@ -174,7 +181,12 @@ views.list = (params) => {
   <div id="list-rows"></div>`;
 };
 function renderListRows() {
-  const items = state.pokemon.filter((p) => matchesQuery(p, listState.q) && (listState.f === 'ALL' || statusOf(p).status === listState.f));
+  const byFilter = (p) => {
+    if (listState.f === 'ALL') return true;
+    if (listState.f === 'UNRELEASED') return !obtainable(p);
+    return obtainable(p) && statusOf(p).status === listState.f;
+  };
+  const items = state.pokemon.filter((p) => matchesQuery(p, listState.q) && byFilter(p));
   $('#list-count').textContent = `${items.length} / 全${state.pokemon.length}件`;
   $('#list-rows').innerHTML = items.length
     ? `<div class="list">${items.map((p) => monRow(p)).join('')}</div>`
@@ -216,7 +228,7 @@ function detailBasic(p, s) {
   return `
   <div class="card pad">
     <div class="mon-name">${esc(p.name)}</div>
-    <div class="mon-no">#${p.no}${p.nameEn ? ` · ${esc(p.nameEn)}` : ''}</div>
+    <div class="mon-no">#${p.no}${p.nameEn ? ` · ${esc(p.nameEn)}` : ''} · GO ${GO_STATUS[p.goStatus]}</div>
     ${typeChips(p.types)}
     ${statBars(p)}
   </div>
@@ -290,7 +302,8 @@ function detailJudge(p, s) {
 // 整理
 let organizeFilter = 'undecided';
 views.organize = () => {
-  const all = state.pokemon.map((p) => ({ p, s: statusOf(p) }));
+  // GO未実装は手持ちにいないので整理の対象外
+  const all = state.pokemon.filter(obtainable).map((p) => ({ p, s: statusOf(p) }));
   const undecided = all.filter((x) => !x.s.decided);
   const differ = all.filter((x) => x.s.decided && x.s.status !== x.s.rec);
   const items = { undecided, differ, all }[organizeFilter];
@@ -319,7 +332,7 @@ function computeSearch() {
   const f = searchForm;
   const picked = [];
   const skipped = [];
-  for (const p of state.pokemon) {
+  for (const p of state.pokemon.filter(obtainable)) {
     const s = statusOf(p);
     const status = s.decided || f.useRec ? s.status : null;
     let ok = f.target === 'ALL' || status === f.target;
@@ -462,13 +475,30 @@ views.update = () => `
     </ol>
   </div>`;
 
-let pokemonRange = '1-151';
+let pokemonRange = null; // null = 全国図鑑の全範囲
+const fullRange = () => `1-${dexMax()}`;
+/** 世代ごとの範囲。最終世代の終わりは図鑑の最新番号に合わせる */
+function rangePresets() {
+  const max = dexMax();
+  return [
+    { label: `全範囲（${fullRange()}）`, range: fullRange() },
+    ...GENERATIONS.map((g, i) => ({ label: `第${g.gen}世代`, range: `${g.from}-${i === GENERATIONS.length - 1 ? max : g.to}` })),
+  ];
+}
 function promptText(k) {
-  return promptCache[k].replaceAll('{{TODAY}}', today()).replaceAll('{{RANGE}}', pokemonRange);
+  return promptCache[k]
+    .replaceAll('{{TODAY}}', today())
+    .replaceAll('{{RANGE}}', pokemonRange || fullRange())
+    .replaceAll('{{DEX_MAX}}', String(dexMax()));
 }
 function promptBox(k) {
+  const range = pokemonRange || fullRange();
   return `
-    ${k === 'pokemon' ? `<div class="field-label">調査する図鑑番号の範囲</div><input id="range" value="${esc(pokemonRange)}" style="width:140px;height:36px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)">` : ''}
+    ${k === 'pokemon' ? `
+      <div class="field-label">調査する図鑑番号の範囲<span class="muted">（GO未実装も含む）</span></div>
+      <input id="range" value="${esc(range)}" style="width:140px;height:36px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)">
+      <div class="chips" style="margin:10px 0 0;flex-wrap:wrap">${rangePresets().map((p) => `<button data-range="${p.range}" aria-pressed="${p.range === range}" style="height:30px;padding:0 12px;font-size:12.5px">${p.label}</button>`).join('')}</div>
+      <p class="muted" style="margin:8px 0 0">AIが途中で省略する場合は世代ごとに分けて依頼し、アップロード時に「追加（マージ）」で採用してください。</p>` : ''}
     <pre class="prompt" id="prompt-text">${esc(promptText(k))}</pre>
     <button class="btn primary block" data-copy-prompt="${k}">プロンプトをコピー</button>`;
 }
@@ -498,15 +528,24 @@ function uploadReport(u, i) {
     <div class="muted" style="margin-top:4px">レコード ${parsed.records.length}件 / 更新日 ${esc(parsed.meta.updated_at || 'なし')}${cur ? `（現在: ${cur.records.length}件 / ${esc(cur.meta.updated_at || 'なし')}）` : ''}</div>
     ${result.errors.length ? `<ul>${result.errors.slice(0, 20).map((e) => `<li>${esc(e)}</li>`).join('')}${result.errors.length > 20 ? `<li>ほか ${result.errors.length - 20}件</li>` : ''}</ul>` : ''}
     ${result.warnings.length ? `<ul>${result.warnings.map((w) => `<li>⚠ ${esc(w)}</li>`).join('')}</ul>` : ''}
-    ${ok && !u.done ? `<div class="btn-row" style="margin-top:10px"><button class="btn sm primary" data-adopt="${i}">${kind === 'decisions' ? '判断データに取り込む' : '採用する'}</button><button class="btn sm" data-discard="${i}">破棄</button></div>` : ''}
+    ${ok && !u.done ? `<div class="btn-row" style="margin-top:10px">${adoptButtons(kind, cur, i)}<button class="btn sm" data-discard="${i}">破棄</button></div>` : ''}
   </div>`;
+}
+
+function adoptButtons(kind, cur, i) {
+  if (kind === 'decisions') return `<button class="btn sm primary" data-adopt="${i}">判断データに取り込む</button>`;
+  // 基本データは範囲を分けて取得することがあるので、追加（マージ）を選べるようにする
+  if (kind === 'pokemon' && cur?.records.length && cur.meta.sample !== 'true') {
+    return `<button class="btn sm primary" data-adopt="${i}" data-mode="merge">追加（マージ）</button><button class="btn sm" data-adopt="${i}" data-mode="replace">置き換え</button>`;
+  }
+  return `<button class="btn sm primary" data-adopt="${i}" data-mode="replace">採用する</button>`;
 }
 
 async function handleUploadFiles(files) {
   for (const file of files) {
     const text = await file.text();
     const parsed = parse(text);
-    const result = validate(parsed, { knownDex: parsed.kind === 'pokemon' ? null : knownDex() });
+    const result = validate(parsed, { knownDex: parsed.kind === 'pokemon' ? null : knownDex(), dexMax: dexMax() });
     pending.unshift({ name: file.name, text, parsed, result, done: false });
   }
   render(true);
@@ -559,7 +598,14 @@ function onClick(e) {
   if (d.copy != null) { copyText(d.copy); return; }
   if (d.prompt) { togglePrompt(d.prompt); return; }
   if (d.copyPrompt) { copyText(promptText(d.copyPrompt)); return; }
-  if (d.adopt != null) { adopt(Number(d.adopt)); return; }
+  if (d.adopt != null) { adopt(Number(d.adopt), d.mode); return; }
+  if (d.range) {
+    pokemonRange = d.range;
+    $('#range').value = d.range;
+    $('#prompt-text').textContent = promptText('pokemon');
+    $$('[data-range]').forEach((b) => b.setAttribute('aria-pressed', b === t));
+    return;
+  }
   if (d.discard != null) { pending.splice(Number(d.discard), 1); render(true); return; }
   if (d.revert) {
     if (confirm(`${KINDS[d.revert].label}をアップロード前（同梱データ）に戻しますか？`)) {
@@ -569,7 +615,7 @@ function onClick(e) {
   }
   switch (d.action) {
     case 'apply-all': {
-      const list = state.pokemon.filter((p) => !state.decisions[p.key]?.status);
+      const list = state.pokemon.filter((p) => obtainable(p) && !state.decisions[p.key]?.status);
       if (!confirm(`未判断の ${list.length}件に、おすすめの状態をそのまま設定します。よろしいですか？`)) return;
       for (const p of list) setDecision(p.key, { status: statusOf(p).rec });
       toast(`${list.length}件に適用しました`);
@@ -609,15 +655,15 @@ async function togglePrompt(k) {
   }
 }
 
-async function adopt(i) {
+async function adopt(i, mode = 'replace') {
   const u = pending[i];
   try {
     if (u.parsed.kind === 'decisions') {
       const n = importDecisions(u.parsed);
       toast(`判断 ${n}件を取り込みました`);
     } else {
-      await adoptData(u.parsed.kind, u.text);
-      toast(`${KINDS[u.parsed.kind].label}を更新しました`);
+      await adoptData(u.parsed.kind, u.text, mode);
+      toast(`${KINDS[u.parsed.kind].label}を${mode === 'merge' ? '追加' : '更新'}しました`);
     }
     u.done = true;
     invalidate();
@@ -663,7 +709,8 @@ function onChange(e) {
 function onInput(e) {
   if (e.target.id === 'list-q') { listState.q = e.target.value; renderListRows(); }
   if (e.target.id === 'range') {
-    pokemonRange = e.target.value.trim() || '1-151';
+    pokemonRange = e.target.value.trim() || null;
+    $$('[data-range]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.range === (pokemonRange || fullRange())));
     $('#prompt-text').textContent = promptText('pokemon');
   }
 }

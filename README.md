@@ -44,6 +44,7 @@ pokemon-go-organizer/
 ├── css/style.css
 ├── js/
 │   ├── app.js           … 画面・ルーティング
+│   ├── config.js        … 全国図鑑の最終番号（既定 1025）・世代の範囲
 │   ├── markdown.js      … Markdownの解析・検証・書き出し
 │   ├── store.js         … データ読み込み・LocalStorage保存
 │   ├── rules.js         … 整理ルール・おすすめ判定
@@ -54,6 +55,12 @@ pokemon-go-organizer/
 ├── user/                … 自分の判断（Git管理外）
 └── docs/ui-mock.png     … UIモック
 ```
+
+## 図鑑の範囲
+
+本編ソフトの全国図鑑 1〜最新番号（現在 1025）を **GO未実装も含めて** すべて扱う。
+GOの実装状況は各ポケモンの `go_status` で持つので、範囲を手で管理する必要はない。
+新作で図鑑が増えた場合も、AIでデータを取り直してアップロードすれば自動で範囲が広がる（詳細は DATA_SCHEMA.md）。
 
 ## 開発フェーズの進捗（DESIGN.md §29）
 

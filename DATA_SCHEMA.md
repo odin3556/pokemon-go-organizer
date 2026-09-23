@@ -34,6 +34,18 @@ Webアプリ・AI・人間の三者が同じMarkdownを読み書きできるよ�
 | `checked_at` | 推奨 | 情報源を確認した日 |
 | `criteria` | 任意 | ランキングの評価基準（例：「DPS×TDO」） |
 | `sample` | 任意 | `true` ならダミー値を含むサンプル。UIに警告を出す |
+| `dex_max` | pokemon.md で推奨 | このデータが対象とする全国図鑑の最終番号（例 `1025`） |
+
+---
+
+## 図鑑の範囲
+
+対象は **本編ソフトの全国図鑑 1〜最新番号のすべて**（Pokémon GO 未実装も含む）。
+GOの実装状況を追いかけて範囲を管理する手間をなくすため、未実装かどうかは範囲ではなく `go_status` で持つ。
+
+- 最新番号の既定値は `js/config.js` の `NATIONAL_DEX_MAX`（現在 1025）
+- 実際に使う最終番号 = `NATIONAL_DEX_MAX`・`pokemon.md` の `dex_max`・データ中の最大番号 のうち最大のもの
+- よって新作で図鑑が増えても、AIで取り直したデータをアップロードすれば自動で範囲が広がる（コード修正不要）
 
 ---
 
@@ -62,12 +74,14 @@ Webアプリ・AI・人間の三者が同じMarkdownを読み書きできるよ�
 updated_at: 2026-09-23
 source_name: Example
 source_url: https://example.com/
+dex_max: 1025
 
 ## #150 normal
 
 - pokedex: 150
 - name_ja: ミュウツー
 - name_en: Mewtwo
+- go_status: released
 - types: エスパー
 - attack: 300
 - defense: 182
@@ -81,8 +95,9 @@ source_url: https://example.com/
 | `pokedex` | ✅ | 整数 | 全国図鑑番号（見出しと一致すること） |
 | `name_ja` | ✅ | 文字列 | 日本語名 |
 | `name_en` | 推奨 | 文字列 | 英語名 |
+| `go_status` | 推奨 | `released` / `unreleased` / `unknown` | GOでの実装状況。`unreleased` は整理・検索の対象外 |
 | `types` | ✅ | カンマ区切り | タイプ（日本語。最大2つ） |
-| `attack` / `defense` / `stamina` | ✅ | 整数 or unknown | GOの種族値 |
+| `attack` / `defense` / `stamina` | ✅ | 整数 or unknown | GOの種族値（GO未実装で不明なら unknown） |
 | `evolves_from` / `evolves_to` | 任意 | 図鑑番号（カンマ区切り） | 進化関係 |
 | `form_name` | 任意 | 文字列 | 表示用のフォルム名（例：アローラのすがた） |
 
@@ -189,7 +204,7 @@ updated_at: 2026-09-23
 - 1行目の見出しから種別を判定できない
 - `updated_at` がない／日付形式でない
 - レコードが0件
-- `pokedex` が整数でない、または見出しの番号と一致しない
+- `pokedex` が1以上の整数でない、または見出しの番号と一致しない
 - 同じ `図鑑番号 + form (+区別語)` の重複
 - 必須項目の欠落
 - 数値項目に数値でも `unknown` でもない値
@@ -199,4 +214,13 @@ updated_at: 2026-09-23
 - `source_url` / `checked_at` がない
 - ランキング等で `unknown` が含まれる
 - 基本データ（pokemon.md）に存在しない図鑑番号
+- 全国図鑑の最終番号より大きい番号（新作で増えた可能性。採用すると範囲が自動で広がる）
+- pokemon.md が 1〜最終番号 をすべて含んでいない（範囲を分けて取得した場合は「追加（マージ）」で採用）
+- `go_status` が決められた値でない
 - `sample: true`
+
+## 分割アップロード（pokemon.md のみ）
+
+全国図鑑すべてを一度にAIへ頼むと途中で省略されやすいので、世代ごとなどに分けて取得してよい。
+アップロード時に **追加（マージ）** を選ぶと、今のデータに足し込む（同じ `番号 + form` は新しい方で上書き、`dex_max` は大きい方を残す）。
+**置き換え** は今のデータを丸ごと差し替える。

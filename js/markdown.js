@@ -73,7 +73,11 @@ export function parse(text) {
   return out;
 }
 
-/** 解析結果の検証。ctx.knownDex = 基本データに存在する図鑑番号の Set */
+/**
+ * 解析結果の検証
+ * ctx.knownDex = 基本データに存在する図鑑番号の Set
+ * ctx.dexMax   = 全国図鑑の最終番号（超える番号は「新作で増えた可能性」として警告のみ）
+ */
 export function validate(parsed, ctx = {}) {
   const errors = [...parsed.errors];
   const warnings = [];
@@ -96,10 +100,13 @@ export function validate(parsed, ctx = {}) {
   const seen = new Map();
   let unknownCount = 0;
   const missingDex = new Set();
+  const overMax = new Set();
+  const badGoStatus = [];
 
   for (const r of records) {
     const at = `${r.line}行目 #${r.key}`;
-    if (!/^\d+$/.test(r.headNo)) errors.push(`${at}: 見出しの図鑑番号が整数ではありません。`);
+    if (!/^\d+$/.test(r.headNo) || Number(r.headNo) < 1) errors.push(`${at}: 見出しの図鑑番号が1以上の整数ではありません。`);
+    else if (ctx.dexMax && Number(r.headNo) > ctx.dexMax) overMax.add(r.headNo);
     if (seen.has(r.key)) errors.push(`${at}: 見出しが重複しています（${seen.get(r.key)}行目と同じ）。`);
     seen.set(r.key, r.line);
 
@@ -118,10 +125,18 @@ export function validate(parsed, ctx = {}) {
     if (kind === 'decisions' && f.status && !STATUSES.includes(f.status.toUpperCase())) {
       errors.push(`${at}: status は KEEP / HOLD / EXCLUDE のいずれかです（${f.status}）。`);
     }
+    if (kind === 'pokemon' && f.go_status && !['released', 'unreleased', 'unknown'].includes(f.go_status)) badGoStatus.push(r.headNo);
     if (schema.required.some((k) => k !== 'pokedex' && isUnknown(f[k]))) unknownCount++;
     if (ctx.knownDex && kind !== 'pokemon' && !ctx.knownDex.has(Number(r.headNo))) missingDex.add(r.headNo);
   }
   if (unknownCount) warnings.push(`${unknownCount}件のレコードに unknown の必須値があります（判定では「データなし」扱い）。`);
+  if (overMax.size) warnings.push(`全国図鑑 ${ctx.dexMax} 番より大きい番号があります（新作で追加された可能性）: ${[...overMax].slice(0, 15).join(', ')}。採用すると図鑑の範囲が自動で広がります。`);
+  if (badGoStatus.length) warnings.push(`go_status は released / unreleased / unknown のいずれかです（${badGoStatus.slice(0, 10).join(', ')} ほか）。不明として扱います。`);
+  if (kind === 'pokemon' && ctx.dexMax) {
+    const covered = new Set(records.map((r) => Number(r.headNo)));
+    const lacking = ctx.dexMax - [...covered].filter((n) => n >= 1 && n <= ctx.dexMax).length;
+    if (lacking > 0) warnings.push(`全国図鑑 1〜${ctx.dexMax} のうち ${lacking}件が含まれていません。範囲を分けて取得した場合は「追加（マージ）」で採用してください。`);
+  }
   if (missingDex.size) warnings.push(`基本データにない図鑑番号があります: ${[...missingDex].slice(0, 15).join(', ')}${missingDex.size > 15 ? ' ほか' : ''}`);
   return { errors, warnings };
 }
@@ -136,4 +151,36 @@ export function serializeDecisions(decisions, today) {
     if (d.memo) md += `- memo: ${d.memo.replace(/\r?\n/g, ' ')}\n`;
   }
   return md;
+}
+
+const KEY_ORDER = {
+  pokemon: ['pokedex', 'name_ja', 'name_en', 'form_name', 'go_status', 'types', 'attack', 'defense', 'stamina', 'evolves_from', 'evolves_to'],
+};
+
+/** 解析結果 → Markdown（マージ後の書き出しに使う） */
+export function serialize(parsed) {
+  let md = `# ${KINDS[parsed.kind].title}\n\n`;
+  for (const [k, v] of Object.entries(parsed.meta)) md += `${k}: ${v}\n`;
+  const order = KEY_ORDER[parsed.kind] || [];
+  for (const r of parsed.records) {
+    md += `\n## #${r.key}\n\n`;
+    const keys = [...order.filter((k) => k in r.fields), ...Object.keys(r.fields).filter((k) => !order.includes(k))];
+    for (const k of keys) md += `- ${k}: ${r.fields[k]}\n`;
+  }
+  return md;
+}
+
+/**
+ * 今のデータに新しいデータを追加する。同じ見出し（番号+form）は新しい方で上書き。
+ * メタ情報は新しい方を優先し、dex_max は大きい方を残す。
+ */
+export function mergeParsed(current, incoming) {
+  const byKey = new Map(current.records.map((r) => [r.key, r]));
+  for (const r of incoming.records) byKey.set(r.key, r);
+  const records = [...byKey.values()].sort((a, b) => Number(a.headNo) - Number(b.headNo) || a.key.localeCompare(b.key));
+  const meta = { ...current.meta, ...incoming.meta };
+  const dexMax = Math.max(Number(current.meta.dex_max) || 0, Number(incoming.meta.dex_max) || 0);
+  if (dexMax) meta.dex_max = String(dexMax);
+  if (current.meta.sample === 'true' && incoming.meta.sample !== 'true') delete meta.sample;
+  return serialize({ kind: incoming.kind, meta, records });
 }

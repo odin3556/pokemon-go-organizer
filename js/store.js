@@ -2,7 +2,8 @@
 // - 外部データ: data/*.md（同梱）→ アップロードされたものがあれば LocalStorage の方を優先
 // - ユーザー判断・ルール設定: LocalStorage（外部データとは別キー）
 
-import { KINDS, DATA_KINDS, parse, isUnknown } from './markdown.js';
+import { KINDS, DATA_KINDS, parse, isUnknown, mergeParsed } from './markdown.js';
+import { NATIONAL_DEX_MAX } from './config.js';
 import { DEFAULT_RULES } from './rules.js';
 
 const LS = {
@@ -75,6 +76,7 @@ function buildModel() {
       name: f.name_ja || f.name_en || `#${r.headNo}`,
       nameEn: isUnknown(f.name_en) ? '' : f.name_en,
       formName: isUnknown(f.form_name) ? '' : f.form_name,
+      goStatus: ['released', 'unreleased'].includes(f.go_status) ? f.go_status : 'unknown',
       types: list(f.types),
       atk: num(f.attack),
       def: num(f.defense),
@@ -103,8 +105,23 @@ function buildModel() {
 
 export const knownDex = () => new Set(state.pokemon.map((p) => p.no));
 
-/** 検証済みのMarkdownを正式データとして採用する */
-export async function adoptData(kind, text) {
+/** 全国図鑑の最終番号。定数・pokemon.md の dex_max・実データの最大番号のうち最大のもの */
+export function dexMax() {
+  const meta = Number(state.files.pokemon?.parsed.meta.dex_max) || 0;
+  return Math.max(NATIONAL_DEX_MAX, meta, ...state.pokemon.map((p) => p.no));
+}
+
+/** GOで入手できる（未実装でない）ポケモン。整理・検索の対象 */
+export const obtainable = (p) => p.goStatus !== 'unreleased';
+
+/**
+ * 検証済みのMarkdownを正式データとして採用する
+ * @param {'replace'|'merge'} mode merge = 今のデータに追加（同じ見出しは新しい方で上書き）
+ */
+export async function adoptData(kind, text, mode = 'replace') {
+  if (mode === 'merge' && state.files[kind]?.parsed.records.length) {
+    text = mergeParsed(state.files[kind].parsed, parse(text));
+  }
   if (!lsSet(LS.data(kind), text)) throw new Error('ブラウザへの保存に失敗しました（容量不足の可能性）。');
   await loadKind(kind);
   buildModel();
